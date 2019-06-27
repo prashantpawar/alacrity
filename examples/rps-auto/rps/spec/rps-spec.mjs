@@ -11,6 +11,9 @@ const k = (reject, f) => (err, ...d) =>
   !!err ? reject(err)
         : f(...d);
 
+// TODO replace this with more intelligent + functional strategy
+const log = console.log;
+
 const balanceOf = a =>
   a.web3.eth.getBalance(a.userAddress);
 
@@ -144,7 +147,7 @@ const txReceiptFor = (web3, txHash) =>
       : resolve(r)));
 
 
-const deployContractWith = (web3, userAddress) =>
+const deployContractWith = (web3, userAddress, nickname) =>
     ( contractAbi
     , contractCode
     , player1Addr
@@ -161,26 +164,43 @@ const deployContractWith = (web3, userAddress) =>
 
     const gatherContractInfo = txHash =>
       txReceiptFor(web3, txHash)
-        .then(r => resolve(Contract(web3, userAddress)
+        .then(r => Contract(web3, userAddress)
           ( contractAbi
           , contractCode
           , player1Addr
           , player2Addr
           , r.contractAddress
-          )))
+          ))
         .catch(reject);
 
+    const logAwaitDeployConfirm = txHash =>
+      log(`Done; awaiting confirmation of contract deployment...`) || Promise.resolve(txHash);
+
+    log(`${nickname} deploys contract...`);
+
     return web3.eth.sendTransaction(o, k(reject, txHash =>
-      awaitConfirmation(web3, txHash, blockPollingPeriodInSeconds)
-        .then(gatherContractInfo)));
+      logAwaitDeployConfirm(txHash)
+        .then(txHash => awaitConfirmation(web3, txHash, blockPollingPeriodInSeconds))
+        .then(a => log(`Done; fetching transaction receipt...`) || a)
+        .then(gatherContractInfo)
+        .then(a => log(`Done.`) || a)
+        .then(resolve)));
   });
 
 
-const EthereumNetwork = (web3, userAddress) =>
-  ({ deploy: deployContractWith(web3, userAddress)
+const attachContractWith = (web3, userAddress, nickname) => (...a) => {
+  console.log(`${nickname} attaches to contract.`);
+  return Promise.resolve(Contract(web3, userAddress)(...a));
+};
+
+
+const EthereumNetwork = (web3, userAddress, nickname) =>
+  ({ deploy: deployContractWith(web3, userAddress, nickname)
    , attach: (...a) => Promise.resolve(Contract(web3, userAddress)(...a))
+   , attach: attachContractWith(web3, userAddress, nickname)
    , web3
    , userAddress
+   , nickname
    });
 
 
@@ -194,47 +214,99 @@ const runPrep = done => {
     .catch(stdlib.panic);
 };
 
-const wagerInWei  = stdlib.toBN(stdlib.web3.toWei(1.5, 'ether'));
+const wagerInEth  = '1.5';
+const wagerInWei  = stdlib.toBN(stdlib.web3.toWei(wagerInEth, 'ether'));
 const escrowInWei = wagerInWei.div(10);
+const escrowInEth = stdlib.web3.fromWei(escrowInWei, 'ether').toString();
 
 const runGameWith = (alice, bob) => {
   const contractCode = contractCodeWithCtors(accts.alice, accts.bob);
 
+  const logShootPass = (who, hand, ctc) =>
+    log([ `${who.nickname} shoots ${hand}`
+        , `with wager of ${wagerInEth} ETH`
+        , `and escrow of ${escrowInEth} ETH.`
+        ].join(' '))
+      || Promise.resolve(ctc);
+
   const bobShootScissors = ctcAlice =>
     new Promise(resolve =>
       bob.attach(ctcAlice.abi, ctcAlice.code, accts.alice, accts.bob, ctcAlice.address)
+        .then(ctcBob => logShootPass(bob, 'scissors', ctcBob))
         .then(ctcBob => RPS.B(ctcBob, interact, 2, resolve)));
 
   const aliceShootRock = ctc =>
     new Promise(resolve =>
-      RPS.A(ctc, interact, wagerInWei, escrowInWei, 0, resolve));
+      logShootPass(alice, 'rock', ctc)
+        .then(() => RPS.A(ctc, interact, wagerInWei, escrowInWei, 0, resolve)));
+
+  const headerMsg = ` * Starting new game at ${new Date().toTimeString()} * `;
+  const horizFor  = m => '─'.repeat(m.length);
+
+  log([ ``
+      , horizFor(headerMsg)
+      , headerMsg
+      , ``
+      ].join('\n'));
 
   return alice
     .deploy(RPS.ABI, contractCode, accts.alice, accts.bob)
-    .then(ctc => Promise.all([ bobShootScissors(ctc), aliceShootRock(ctc) ]));
+    .then(ctc => Promise.all([ bobShootScissors(ctc), aliceShootRock(ctc) ]))
+    .then(res => log(`The game has ended.`) || res);
 };
 
 
 describe('A rock/paper/scissors game', () => {
-  beforeAll(runPrep);
+  beforeEach(runPrep);
 
   describe('results in', () => {
 
-    it('both participants agreeing on who won', done =>
-      runGameWith(EthereumNetwork(stdlib.web3, accts.alice), EthereumNetwork(stdlib.web3, accts.bob))
-        .then(([ bobOutcome, aliceOutcome ]) => expect(bobOutcome).toEqual(aliceOutcome))
-        .then(done));
+    it('both participants agreeing on who won', done => {
+      const alice = EthereumNetwork(stdlib.web3, accts.alice, 'Alice');
+      const bob   = EthereumNetwork(stdlib.web3, accts.bob,   'Bob');
+
+      const check = ([ bobOutcome, aliceOutcome ]) => {
+        const agreed = bobOutcome.equals(aliceOutcome);
+        agreed && log(`Alice and Bob agree that Alice won ${wagerInEth} ETH.`);
+        return expect(agreed).toBe(true);
+      };
+
+      return runGameWith(alice, bob)
+        .then(check)
+        .then(done)
+    });
 
     it('the winner\'s balance being increased + loser\'s balance being reduced by wager', done => {
-      const alice = EthereumNetwork(stdlib.web3, accts.alice);
-      const bob   = EthereumNetwork(stdlib.web3, accts.bob);
+      const alice = EthereumNetwork(stdlib.web3, accts.alice, 'Alice');
+      const bob   = EthereumNetwork(stdlib.web3, accts.bob,   'Bob');
 
       const balanceStartAlice = balanceOf(alice);
       const balanceStartBob   = balanceOf(bob);
 
+      const check = () => {
+        const balanceEndAlice = balanceOf(alice);
+        const balanceEndBob   = balanceOf(bob);
+
+        // "The Man" always gets his cut regardless - this is just a rough
+        // guesstimate of processing fees
+        const estimatedGas = stdlib.toBN(stdlib.web3.toWei('5000000', 'wei'));
+
+        const aliceGte = balanceEndAlice.gte(
+          balanceStartAlice.plus(wagerInWei)
+                           .minus(estimatedGas));
+
+        const bobLt = balanceEndBob.lt(
+          balanceStartBob.minus(wagerInWei));
+
+        aliceGte && log(`Alice's balance was increased by ${wagerInEth} ETH.`);
+        bobLt    && log(`Bob's balance was decreased by ${wagerInEth} ETH.`);
+
+        expect(aliceGte).toBe(true);
+        expect(bobLt).toBe(true);
+      };
+
       return runGameWith(alice, bob)
-        .then(() => expect(balanceOf(alice)).toBeGreaterThan(balanceStartAlice + wagerInWei))
-        .then(() => expect(balanceOf(bob  )).toBeLessThan(   balanceStartBob   - wagerInWei))
+        .then(check)
         .then(done);
     });
   });

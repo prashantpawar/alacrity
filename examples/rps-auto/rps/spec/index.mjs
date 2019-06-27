@@ -1,19 +1,9 @@
 // vim: filetype=javascript
 
-import glob                   from 'glob';
-import Jasmine                from 'jasmine';
-import JasmineConsoleReporter from 'jasmine-console-reporter';
+import glob    from 'glob';
+import Jasmine from 'jasmine';
 
 const jasmine = new Jasmine();
-jasmine.env.clearReporters();
-
-jasmine.addReporter(new JasmineConsoleReporter(
-  { colors:     true
-  , cleanStack: true
-  , verbosity:  4
-  , listStyle:  'indent'
-  , activity:   'dots'
-  }));
 
 const panic = e =>
   console.error(e) || process.exit(1);
