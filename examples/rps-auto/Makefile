@@ -11,16 +11,19 @@ build/rps.ala.mjs: rps/rps.ala
 	stack exec -- alacrityc -o build $^
 
 lint:
-	@`npm bin`/eslint -c .eslintrc.yaml rps/**/*.mjs
+	@`npm bin`/eslint -c .eslintrc.yaml "rps/**/*.mjs"
 
 start_geth:
-	../../scripts/ethereum-devnet/run.sh
+	@../../scripts/ethereum-devnet/run.sh
 
 stop_geth:
-	killall geth
+	@killall geth
 
 test: build/rps.ala.mjs
-	node --experimental-modules rps/spec/index.mjs
+	@node --experimental-modules rps/spec/index.mjs
 
 logs:
-	tail -f ../../_ethereum/geth-data/logs/testnet.log
+	@tail -f ../../_ethereum/geth-data/logs/testnet.log
+
+demo: build/rps.ala.mjs
+	@node --experimental-modules rps/demo-run-stdout.mjs
